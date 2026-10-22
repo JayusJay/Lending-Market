@@ -134,13 +134,19 @@ document which token classes are supported.
 ## L1 — Surplus accrues to no one and cannot be swept · Low
 
 When `suppliesBefore == 0` while borrows remain open, `accrueInterest` grows the
-borrow index but credits the interest to nobody. If those borrowers later repay,
-the excess lands in the contract as trapped surplus — and there is no sweep
-function anywhere. Floor-division dust from both index updates accumulates the
-same way, permanently.
+borrow index but credits the interest to nobody. **In practice this branch is
+unreachable**: a supplier's claimable PV always exceeds the contract's base
+balance by the outstanding debt, so a full exit reverts on the token transfer —
+`totalSupplyPrincipal` can only reach zero once borrows are repaid, at which
+point nothing accrues anyway. The guard is dead code, not a loss path.
 
-**Fix/Document.** A small admin `sweep` is cheap and signature-additive; at
-minimum document that surplus exists and is unreachable.
+What remains real but small: floor-division dust in both index updates
+accumulates as claimless base, and any direct transfer to the contract (a
+fat-fingered deposit) is permanently unrecoverable — there is no sweep
+function anywhere.
+
+**Document.** A small admin `sweep` is cheap and signature-additive if the team
+wants recovery; otherwise just state that surplus exists and is unreachable.
 
 `src/LendingMarket.sol` — `accrueInterest()`.
 

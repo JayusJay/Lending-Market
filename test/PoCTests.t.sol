@@ -277,9 +277,11 @@ contract PoCTests is Test {
     // L1 — Low — surplus accrues to no one and cannot be swept (documentation)
     //
     // Any base that lands in the contract without principal behind it — index floor
-    // dust, interest accrued while supply sat empty, or a mistaken direct transfer —
-    // has no exit: there is no sweep function anywhere. The mint stands in for
-    // accumulated surplus; the withdrawal proves legitimate claims can't reach it.
+    // dust or a mistaken direct transfer — has no exit: there is no sweep function
+    // anywhere. (The "interest accrued while supply sat empty" variant is
+    // unreachable: suppliers can't fully exit while borrows are open, so
+    // suppliesBefore == 0 only holds when nothing accrues anyway.) The mint stands
+    // in for accumulated surplus; the withdrawal proves claims can't reach it.
     // ---------------------------------------------------------------------------------------
     function test_L1_trappedSurplusIsUnclaimable() public {
         base.mint(address(market), 123e18); // accumulated surplus / stray transfer
