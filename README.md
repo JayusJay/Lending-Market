@@ -70,7 +70,7 @@ Severity-ordered; one line each. Full analysis, bug-class taxonomy, and disposit
 | L2 | Low | Capped full repayments burned a floor-computed principal, leaving ~1 wei of debt accruing forever. | Full repayments burn the stored principal outright. |
 | L3 | Low | When seize was capped at `collateralBalance`, the liquidator still paid the full `repayAmount` — thin positions became unliquidatable. | Repay scales down to the collateral actually seized. |
 | L4 | Low | Self-liquidation is permitted — a borrower can deleverage themselves at the incentive rate. | Documented, allowed deliberately; bounded harm. |
-| L5 | Low | `initialize` accepted zero addresses — a bad wire-up could deploy a bricked or keyless market. | All address params must be non-zero. |
+| L5 | Low | `initialize` accepted zero addresses and out-of-bounds risk params — a bad wire-up could deploy a bricked market, or one originating undercollateralized borrows (`cf > 1e18`) from block one. | Non-zero addresses; `collateralFactor` in (0, 1e18], `liquidationIncentive` ≥ 1e18 — mirroring `setParameters`. |
 | I1 | Info | Debt accrues through a pause while `liquidate` stays frozen — pause duration manufactures unhealthy drift. | Documented; the right trade-off, now stated. |
 | I2 | Info | Suppliers capture 100% of borrow interest; the protocol keeps no reserve and builds no bad-debt buffer. | Documented as a design observation. |
 

@@ -393,6 +393,23 @@ contract PoCTests is Test {
         impl.initialize(admin, guardian, address(oracle), address(base), address(0), 0.80e18, 1.10e18, RATE);
     }
 
+    /// Same finding, risk-parameter variant: collateralFactor must be in (0, FACTOR]
+    /// and liquidationIncentive at or above par — the same bounds setParameters
+    /// enforces, so init can't wire a market the admin could never set later.
+    function test_L5_initializeRejectsOutOfBoundsParameters() public {
+        LendingMarket impl = new LendingMarket();
+        vm.expectRevert();
+        impl.initialize(admin, guardian, address(oracle), address(base), address(weth), 0, 1.10e18, RATE);
+
+        impl = new LendingMarket();
+        vm.expectRevert();
+        impl.initialize(admin, guardian, address(oracle), address(base), address(weth), 1.01e18, 1.10e18, RATE);
+
+        impl = new LendingMarket();
+        vm.expectRevert();
+        impl.initialize(admin, guardian, address(oracle), address(base), address(weth), 0.80e18, 0.99e18, RATE);
+    }
+
     // ---------------------------------------------------------------------------------------
     // I1 — Info — interest accrues through a pause while liquidation is frozen
     // (documentation)
@@ -688,6 +705,29 @@ contract OriginalExploitTest is Test {
         impl.initialize(admin, guardian, address(0), address(base), address(weth), 0.80e18, 1.10e18, RATE);
 
         assertEq(address(impl.oracle()), address(0));
+    }
+
+    // L5 (cont.) — initialize also accepts a collateralFactor above 1e18, wiring a
+    // market where borrowing power exceeds collateral value: 1 WETH of collateral
+    // (2,000 base) backs a 3,000-base borrow.
+    function test_L5_initializeAcceptsOutOfBoundsFactor() public {
+        OriginalLendingMarket m = new OriginalLendingMarket();
+        m.initialize(admin, guardian, address(oracle), address(base), address(weth), 1.5e18, 1.10e18, RATE);
+
+        base.mint(supplier, 1_000_000e18);
+        vm.startPrank(supplier);
+        base.approve(address(m), type(uint256).max);
+        m.supply(1_000_000e18);
+        vm.stopPrank();
+
+        weth.mint(borrower, 1e18);
+        vm.startPrank(borrower);
+        weth.approve(address(m), type(uint256).max);
+        m.supplyCollateral(1e18);
+        m.borrow(3_000e18); // undercollateralized by construction — accepted anyway
+        vm.stopPrank();
+
+        assertEq(base.balanceOf(borrower), 3_000e18);
     }
 }
 

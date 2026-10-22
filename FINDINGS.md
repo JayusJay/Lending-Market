@@ -20,7 +20,7 @@ called out for the audit. **Watch**: edge case to verify with more time.
 | L2 | Low | Full repay/liquidate leaves residual dust debt | Fix |
 | L3 | Low | Seize cap can overcharge the liquidator | Fix |
 | L4 | Low | Self-liquidation permitted | Document |
-| L5 | Low | `initialize` accepts zero addresses | Fix |
+| L5 | Low | `initialize` accepts zero addresses and out-of-bounds risk params | Fix |
 | I1 | Info | Interest accrues through a pause while liquidation is frozen | Document |
 | I2 | Info | No reserve factor — protocol earns nothing | Document |
 
@@ -178,14 +178,19 @@ position's remaining collateral.
 
 **Document.** Most major markets allow it; flag for the audit rather than block.
 
-## L5 — `initialize` accepts zero addresses · Low
+## L5 — `initialize` accepts zero addresses and out-of-bounds risk params · Low
 
 No validation on `admin_`, `oracle_`, `baseToken_`, `collateralToken_`. A bad
 wire-up deploys a market that prices at address(0) — which reverts on
 `latestRoundData`, bricking all priced paths — or locks admin functions forever.
-Proxied deployment makes a bad init expensive to unwind.
+The risk params are likewise unvalidated: `setParameters` enforces
+`collateralFactor <= FACTOR` and `liquidationIncentive >= FACTOR`, but
+`initialize` accepts anything — a `collateralFactor` above 1e18 wires a market
+that originates borrows exceeding collateral value from block one. Proxied
+deployment makes a bad init expensive to unwind.
 
-**Fix.** `require` non-zero on all address params.
+**Fix.** `require` non-zero on all address params, `collateralFactor_` in
+`(0, FACTOR]`, and `liquidationIncentive_ >= FACTOR` — mirroring `setParameters`.
 
 `src/LendingMarket.sol` — `initialize()`.
 

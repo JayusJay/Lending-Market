@@ -117,6 +117,8 @@ contract LendingMarket {
                 && baseToken_ != address(0) && collateralToken_ != address(0),
             "zero address"
         );
+        require(collateralFactor_ > 0 && collateralFactor_ <= FACTOR, "cf out of bounds");
+        require(liquidationIncentive_ >= FACTOR, "incentive below par");
         _initialized = true;
 
         admin = admin_;
