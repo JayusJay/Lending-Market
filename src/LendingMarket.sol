@@ -23,6 +23,10 @@ contract LendingMarket {
 
     uint256 internal constant FACTOR = 1e18;
 
+    /// @notice Maximum accepted age of an oracle answer before priced paths fail closed.
+    /// @dev A constant, not storage — adding it does not disturb the proxy's layout.
+    uint256 public constant MAX_ORACLE_AGE = 1 hours;
+
     // -------------------------------------------------------------------------------------------
     // Storage
     // -------------------------------------------------------------------------------------------
@@ -108,6 +112,11 @@ contract LendingMarket {
         uint256 borrowRatePerSecond_
     ) external {
         require(!_initialized, "already initialized");
+        require(
+            admin_ != address(0) && pauseGuardian_ != address(0) && oracle_ != address(0)
+                && baseToken_ != address(0) && collateralToken_ != address(0),
+            "zero address"
+        );
         _initialized = true;
 
         admin = admin_;
@@ -157,7 +166,7 @@ contract LendingMarket {
         require(amount > 0, "zero amount");
         accrueInterest();
 
-        baseToken.transferFrom(msg.sender, address(this), amount);
+        require(baseToken.transferFrom(msg.sender, address(this), amount), "transfer failed");
 
         uint256 principal = _principalForSupply(amount);
         supplyPrincipal[msg.sender] += principal;
@@ -170,13 +179,13 @@ contract LendingMarket {
         require(amount > 0, "zero amount");
         accrueInterest();
 
-        uint256 principal = _principalForSupply(amount);
+        uint256 principal = _principalForSupplyUp(amount);
         require(supplyPrincipal[msg.sender] >= principal, "insufficient balance");
 
         supplyPrincipal[msg.sender] -= principal;
         totalSupplyPrincipal -= principal;
 
-        baseToken.transfer(msg.sender, amount);
+        require(baseToken.transfer(msg.sender, amount), "transfer failed");
 
         emit Withdraw(msg.sender, amount);
     }
@@ -188,7 +197,7 @@ contract LendingMarket {
     function supplyCollateral(uint256 amount) external whenNotPaused {
         require(amount > 0, "zero amount");
 
-        collateralToken.transferFrom(msg.sender, address(this), amount);
+        require(collateralToken.transferFrom(msg.sender, address(this), amount), "transfer failed");
 
         collateralBalance[msg.sender] += amount;
         totalCollateral += amount;
@@ -198,6 +207,7 @@ contract LendingMarket {
 
     function withdrawCollateral(uint256 amount) external whenNotPaused {
         require(amount > 0, "zero amount");
+        accrueInterest();
         require(collateralBalance[msg.sender] >= amount, "insufficient collateral");
 
         collateralBalance[msg.sender] -= amount;
@@ -205,7 +215,7 @@ contract LendingMarket {
 
         require(isHealthy(msg.sender), "would be undercollateralized");
 
-        collateralToken.transfer(msg.sender, amount);
+        require(collateralToken.transfer(msg.sender, amount), "transfer failed");
 
         emit WithdrawCollateral(msg.sender, amount);
     }
@@ -214,13 +224,13 @@ contract LendingMarket {
         require(amount > 0, "zero amount");
         accrueInterest();
 
-        uint256 principal = _principalForBorrow(amount);
+        uint256 principal = _principalForBorrowUp(amount);
         borrowPrincipal[msg.sender] += principal;
         totalBorrowPrincipal += principal;
 
         require(isHealthy(msg.sender), "would be undercollateralized");
 
-        baseToken.transfer(msg.sender, amount);
+        require(baseToken.transfer(msg.sender, amount), "transfer failed");
 
         emit Borrow(msg.sender, amount);
     }
@@ -232,9 +242,12 @@ contract LendingMarket {
         uint256 owed = borrowBalanceOf(msg.sender);
         if (amount > owed) amount = owed;
 
-        uint256 principal = _principalForBorrow(amount);
+        // A payment covering the full balance retires the account's stored principal
+        // outright; a partial payment rounds up so the debt can never shrink to dust.
+        uint256 principal =
+            amount >= owed ? borrowPrincipal[msg.sender] : _principalForBorrowUp(amount);
 
-        baseToken.transferFrom(msg.sender, address(this), amount);
+        require(baseToken.transferFrom(msg.sender, address(this), amount), "transfer failed");
 
         borrowPrincipal[msg.sender] -= principal;
         totalBorrowPrincipal -= principal;
@@ -261,20 +274,28 @@ contract LendingMarket {
         uint256 owed = borrowBalanceOf(borrower);
         if (repayAmount > owed) repayAmount = owed;
 
-        uint256 seizeAmount = (repayAmount * liquidationIncentive) / FACTOR;
+        // Seize is computed in collateral units: repaid base is priced through the
+        // oracle before the incentive is applied. If the position cannot cover the
+        // full seize, the repayment is scaled down to the collateral that exists —
+        // a liquidator never pays for collateral they do not receive.
+        uint256 price = getPrice();
+        uint256 seizeAmount = (repayAmount * liquidationIncentive) / price;
         if (seizeAmount > collateralBalance[borrower]) {
             seizeAmount = collateralBalance[borrower];
+            repayAmount = (seizeAmount * price) / liquidationIncentive;
         }
+        require(seizeAmount > 0, "nothing to seize");
 
-        uint256 principal = _principalForBorrow(repayAmount);
+        uint256 principal =
+            repayAmount >= owed ? borrowPrincipal[borrower] : _principalForBorrowUp(repayAmount);
         borrowPrincipal[borrower] -= principal;
         totalBorrowPrincipal -= principal;
 
         collateralBalance[borrower] -= seizeAmount;
         totalCollateral -= seizeAmount;
 
-        baseToken.transferFrom(msg.sender, address(this), repayAmount);
-        collateralToken.transfer(msg.sender, seizeAmount);
+        require(baseToken.transferFrom(msg.sender, address(this), repayAmount), "transfer failed");
+        require(collateralToken.transfer(msg.sender, seizeAmount), "transfer failed");
 
         emit Liquidate(msg.sender, borrower, repayAmount, seizeAmount);
     }
@@ -320,8 +341,13 @@ contract LendingMarket {
     }
 
     /// @notice Collateral price in base-asset terms, 1e18 scaled.
+    /// @dev Fails closed: a non-positive answer or a feed older than MAX_ORACLE_AGE
+    ///      reverts, halting every priced path (borrow, collateral withdrawal,
+    ///      liquidation) until the feed recovers.
     function getPrice() public view returns (uint256) {
-        (, int256 answer,,,) = oracle.latestRoundData();
+        (, int256 answer,, uint256 updatedAt,) = oracle.latestRoundData();
+        require(answer > 0, "bad oracle answer");
+        require(block.timestamp - updatedAt <= MAX_ORACLE_AGE, "stale oracle");
         return uint256(answer);
     }
 
@@ -329,19 +355,30 @@ contract LendingMarket {
     // Internal accounting helpers
     // -------------------------------------------------------------------------------------------
 
-    function _principalForBorrow(uint256 amount) internal view returns (uint256) {
-        return (amount * FACTOR) / baseBorrowIndex;
-    }
-
+    /// @dev Rounds down: used only when minting supply claims, where any dust is
+    ///      forgone by the depositor rather than leaked from the market.
     function _principalForSupply(uint256 amount) internal view returns (uint256) {
         return (amount * FACTOR) / baseSupplyIndex;
+    }
+
+    /// @dev Rounds up: burning a claim or creating debt must charge at least one
+    ///      unit of principal, or dust amounts become free money.
+    function _principalForSupplyUp(uint256 amount) internal view returns (uint256) {
+        return (amount * FACTOR + baseSupplyIndex - 1) / baseSupplyIndex;
+    }
+
+    function _principalForBorrowUp(uint256 amount) internal view returns (uint256) {
+        return (amount * FACTOR + baseBorrowIndex - 1) / baseBorrowIndex;
     }
 
     // -------------------------------------------------------------------------------------------
     // Administration
     // -------------------------------------------------------------------------------------------
 
-    function setOracle(address newOracle) external onlyGuardian {
+    /// @notice Repoints the collateral price feed. Admin (timelock) only: the warm
+    ///         guardian key is limited to pausing, per the documented role split —
+    ///         it must never control how the market prices anything.
+    function setOracle(address newOracle) external onlyAdmin {
         require(newOracle != address(0), "zero oracle");
         oracle = IPriceOracle(newOracle);
         emit OracleUpdated(newOracle);
