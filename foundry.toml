@@ -6,7 +6,7 @@ test = "test"
 solc = "0.8.24"
 optimizer = true
 optimizer_runs = 200
-fuzz = { runs = 256 }
+fuzz = { runs = 1024 }
 invariant = { runs = 64, depth = 32 }
 
 [fmt]
